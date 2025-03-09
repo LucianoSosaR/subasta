@@ -23,15 +23,16 @@ if not DATABASE_URL:
 # CONFIGURACIÓN SELENIUM
 # =========================================
 options = Options()
-options.binary_location = "/usr/bin/google-chrome-stable"  # Ubicación de Chrome en Render
+options.binary_location = "/usr/bin/chromium-browser"  # Ruta de Chromium en Render
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
 options.add_argument("--disable-blink-features=AutomationControlled")
 
-# Inicializar WebDriver con Chrome
+# Inicializar WebDriver con Chromium
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
 
 def parse_auction_id(url: str) -> str:
     """Extrae el identificador de la subasta a partir de la URL."""
