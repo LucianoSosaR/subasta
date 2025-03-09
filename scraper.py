@@ -1,7 +1,6 @@
 import os
 import time
 import re
-import subprocess
 import psycopg2
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -14,25 +13,18 @@ from webdriver_manager.chrome import ChromeDriverManager
 # =========================================
 # CONFIGURACIÓN
 # =========================================
-SCRAPE_URL = "https://www.bavastronline.com.uy/auctions/2153"  # URL de la subasta a scrapear
-DATABASE_URL = os.getenv("DATABASE_URL")  # Variable de entorno para la DB
+SCRAPE_URL = "https://www.bavastronline.com.uy/auctions/2153"  # URL de la subasta
+DATABASE_URL = os.getenv("DATABASE_URL")  # Variable de entorno con la conexión a PostgreSQL
 
 if not DATABASE_URL:
     raise ValueError("❌ ERROR: La variable de entorno DATABASE_URL no está configurada.")
 
 # =========================================
-# INSTALAR CHROME EN RUNTIME DE RENDER
-# =========================================
-def install_chrome():
-    print("🔹 Instalando Google Chrome en el servidor...")
-    subprocess.run("apt-get update && apt-get install -y google-chrome-stable", shell=True)
-install_chrome()
-
-# =========================================
 # CONFIGURACIÓN SELENIUM
 # =========================================
 options = Options()
-options.add_argument("--headless")  # Ejecutar sin interfaz gráfica
+options.binary_location = "/usr/bin/google-chrome-stable"  # Ubicación de Chrome en Render
+options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
@@ -42,10 +34,7 @@ options.add_argument("--disable-blink-features=AutomationControlled")
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 def parse_auction_id(url: str) -> str:
-    """
-    Extrae el identificador de la subasta a partir de la URL.
-    Ejemplo: 'https://www.bavastronline.com.uy/auctions/2153' -> '2153'
-    """
+    """Extrae el identificador de la subasta a partir de la URL."""
     match = re.search(r"auctions/(\d+)", url)
     return match.group(1) if match else "N/A"
 
@@ -177,11 +166,6 @@ def update_database(articulos):
         else:
             cursor.execute('''
                 INSERT INTO subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
-            
-            cursor.execute('''
-                INSERT INTO historial_subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
     
