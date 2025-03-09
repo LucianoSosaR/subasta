@@ -1,9 +1,9 @@
 selenium
 webdriver-manager
-streamlit
 psycopg2-binary
-nltk
-pandas
+streamlit
 numpy
+pandas
 plotly
 scikit-learn
+nltk
