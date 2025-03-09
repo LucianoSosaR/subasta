@@ -1,5 +1,6 @@
 selenium
 webdriver-manager
+google-chrome-stable
 psycopg2-binary
 streamlit
 nltk
