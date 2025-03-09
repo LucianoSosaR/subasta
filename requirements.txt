@@ -1,10 +1,9 @@
 selenium
 webdriver-manager
-google-chrome-stable
-psycopg2-binary
 streamlit
+psycopg2-binary
 nltk
 pandas
 numpy
-scikit-learn
 plotly
+scikit-learn
