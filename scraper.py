@@ -1,7 +1,9 @@
 import os
 import time
 import re
+import subprocess
 import psycopg2
+from psycopg2 import OperationalError
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -20,28 +22,47 @@ if not DATABASE_URL:
     raise ValueError("❌ ERROR: La variable de entorno DATABASE_URL no está configurada.")
 
 # =========================================
-# CONFIGURACIÓN SELENIUM
+# INSTALAR CHROMIUM EN RENDER (SI NO ESTÁ)
+# =========================================
+def install_chromium():
+    """Instala Chromium en el entorno de Render."""
+    print("🔹 Instalando Chromium en Render...")
+    subprocess.run("apt-get update && apt-get install -y chromium-browser", shell=True, check=True)
+
+try:
+    install_chromium()
+except subprocess.CalledProcessError as e:
+    print(f"❌ Error instalando Chromium: {e}")
+    exit(1)
+
+# =========================================
+# CONFIGURACIÓN SELENIUM CON CHROMIUM
 # =========================================
 options = Options()
-options.binary_location = "/usr/bin/chromium-browser"  # Ruta de Chromium en Render
-options.add_argument("--headless")
+options.binary_location = "/usr/bin/chromium-browser"  # Ruta correcta de Chromium en Render
+options.add_argument("--headless")  # Modo sin interfaz gráfica
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
 options.add_argument("--disable-blink-features=AutomationControlled")
 
 # Inicializar WebDriver con Chromium
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+try:
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    print("✅ WebDriver con Chromium iniciado correctamente.")
+except Exception as e:
+    print(f"❌ Error iniciando WebDriver: {e}")
+    exit(1)
 
-
+# =========================================
+# FUNCIONES DE SCRAPING
+# =========================================
 def parse_auction_id(url: str) -> str:
     """Extrae el identificador de la subasta a partir de la URL."""
     match = re.search(r"auctions/(\d+)", url)
     return match.group(1) if match else "N/A"
 
-# =========================================
-# FUNCIONES DE SCRAPING
-# =========================================
 def scroll_down():
     """Realiza scroll hasta que se carguen todos los artículos."""
     scroll_pause_time = 2
@@ -115,10 +136,14 @@ def scrape_subastas(auction_url: str):
 # =========================================
 def update_database(articulos):
     """Guarda o actualiza los datos en la base de datos PostgreSQL."""
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    
-    # Crear la tabla principal si no existe
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+    except OperationalError as e:
+        print(f"❌ Error de conexión a la base de datos: {e}")
+        return
+
+    # Crear las tablas si no existen
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS subastas (
             id SERIAL PRIMARY KEY,
@@ -133,7 +158,6 @@ def update_database(articulos):
         )
     ''')
     
-    # Crear la tabla historial si no existe
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS historial_subastas (
             id SERIAL PRIMARY KEY,
@@ -148,28 +172,19 @@ def update_database(articulos):
         )
     ''')
 
-    cursor.execute("SELECT precio, ofertas, enlace FROM subastas")
-    existing = {row[2]: {'precio': row[0], 'ofertas': row[1]} for row in cursor.fetchall()}
-    
     for lote, descripcion, precio, ofertas, imagen, enlace, subasta_id in articulos:
-        if enlace in existing:
-            if precio != existing[enlace]['precio'] or ofertas != existing[enlace]['ofertas']:
-                cursor.execute('''
-                    UPDATE subastas
-                    SET precio = %s, ofertas = %s, subasta_id = %s, timestamp = CURRENT_TIMESTAMP
-                    WHERE enlace = %s
-                ''', (precio, ofertas, subasta_id, enlace))
-                
-                cursor.execute('''
-                    INSERT INTO historial_subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
-        else:
-            cursor.execute('''
-                INSERT INTO subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
-    
+        cursor.execute('''
+            INSERT INTO subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (enlace) DO UPDATE
+            SET precio = EXCLUDED.precio, ofertas = EXCLUDED.ofertas, subasta_id = EXCLUDED.subasta_id, timestamp = CURRENT_TIMESTAMP
+        ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
+
+        cursor.execute('''
+            INSERT INTO historial_subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
+
     conn.commit()
     conn.close()
 
