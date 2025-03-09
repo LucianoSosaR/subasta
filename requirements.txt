@@ -1,7 +1,9 @@
+selenium
+webdriver-manager
+psycopg2-binary
 streamlit
+nltk
 pandas
 numpy
-plotly
-psycopg2-binary
 scikit-learn
-nltk
+plotly
