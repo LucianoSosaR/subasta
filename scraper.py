@@ -1,7 +1,8 @@
 import os
 import time
 import re
-import sqlite3
+import subprocess
+import psycopg2
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -13,23 +14,37 @@ from webdriver_manager.chrome import ChromeDriverManager
 # =========================================
 # CONFIGURACIÓN
 # =========================================
-SCRAPE_URL = "https://www.bavastronline.com.uy/auctions/2153"  # Cambia este link a la subasta que desees
+SCRAPE_URL = "https://www.bavastronline.com.uy/auctions/2153"  # URL de la subasta a scrapear
+DATABASE_URL = os.getenv("DATABASE_URL")  # Variable de entorno para la DB
 
-# Modo headless para Selenium
+if not DATABASE_URL:
+    raise ValueError("❌ ERROR: La variable de entorno DATABASE_URL no está configurada.")
+
+# =========================================
+# INSTALAR CHROME EN RUNTIME DE RENDER
+# =========================================
+def install_chrome():
+    print("🔹 Instalando Google Chrome en el servidor...")
+    subprocess.run("apt-get update && apt-get install -y google-chrome-stable", shell=True)
+install_chrome()
+
+# =========================================
+# CONFIGURACIÓN SELENIUM
+# =========================================
 options = Options()
-options.add_argument("--headless")
-options.add_argument("--disable-gpu")
+options.add_argument("--headless")  # Ejecutar sin interfaz gráfica
 options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--disable-gpu")
 options.add_argument("--disable-blink-features=AutomationControlled")
 
-# Inicializar WebDriver
+# Inicializar WebDriver con Chrome
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 def parse_auction_id(url: str) -> str:
     """
     Extrae el identificador de la subasta a partir de la URL.
-    Por ejemplo, si la URL es 'https://www.bavastronline.com.uy/auctions/2153',
-    se retorna '2153'. Retorna 'N/A' si no encuentra nada.
+    Ejemplo: 'https://www.bavastronline.com.uy/auctions/2153' -> '2153'
     """
     match = re.search(r"auctions/(\d+)", url)
     return match.group(1) if match else "N/A"
@@ -50,9 +65,7 @@ def scroll_down():
         last_height = new_height
 
 def scrape_subastas(auction_url: str):
-    """Carga la página, hace scroll completo y extrae la información de cada artículo.
-       Retorna una lista de tuplas: (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id).
-    """
+    """Extrae información de los artículos en la subasta."""
     driver.get(auction_url)
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.XPATH, "//*[@id='root']/div[1]/div/div/div[4]/div/div/div"))
@@ -69,18 +82,15 @@ def scrape_subastas(auction_url: str):
     let elements = document.querySelectorAll('.MuiCard-root');
     let data = [];
     elements.forEach((item) => {
-        // Extraer 'lote' y 'descripción'
         let loteElem = item.querySelector('.MuiTypography-body2');
         let lote = loteElem ? loteElem.innerText.trim() : 'N/A';
         
         let desElems = item.querySelectorAll('.MuiTypography-body2');
         let descripcion = desElems.length > 1 ? desElems[1].innerText.trim() : 'N/A';
         
-        // Extraer 'precio'
         let precioElem = item.querySelector('.MuiTypography-body1');
         let precio = precioElem ? precioElem.innerText.trim() : 'N/A';
         
-        // Extraer 'ofertas' recorriendo los párrafos en busca de "Ofertas:"
         let ofertas = 0;
         let pElems = item.querySelectorAll('p');
         pElems.forEach((p) => {
@@ -93,7 +103,6 @@ def scrape_subastas(auction_url: str):
             }
         });
         
-        // Extraer 'imagen' y 'enlace'
         let imgElem = item.querySelector('img');
         let imagen = imgElem ? imgElem.src : 'N/A';
         
@@ -104,12 +113,9 @@ def scrape_subastas(auction_url: str):
     });
     return data;
     """)
-    
+
     # Agregar subasta_id a cada artículo
-    # Estructura final: (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-    articulos_con_id = []
-    for art in articulos:
-        articulos_con_id.append((*art, subasta_id))
+    articulos_con_id = [(lote, descripcion, precio, ofertas, imagen, enlace, subasta_id) for (lote, descripcion, precio, ofertas, imagen, enlace) in articulos]
 
     print(f"✅ Extracción completada: {len(articulos_con_id)} artículos obtenidos (subasta {subasta_id}).")
     return articulos_con_id
@@ -118,19 +124,14 @@ def scrape_subastas(auction_url: str):
 # FUNCIONES DE BASE DE DATOS
 # =========================================
 def update_database(articulos):
-    """Actualiza la base de datos:
-       - Inserta nuevos registros o actualiza precio/ofertas si han cambiado.
-       - Guarda subasta_id en cada registro.
-       - Registra cada inserción/actualización en la tabla historial_subastas.
-    """
-    conn = sqlite3.connect("subastas.db")
+    """Guarda o actualiza los datos en la base de datos PostgreSQL."""
+    conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
     
-    # Crear la tabla principal (subastas) si no existe
-    # Se agrega 'subasta_id' como columna
+    # Crear la tabla principal si no existe
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS subastas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             lote TEXT,
             descripcion TEXT,
             precio TEXT,
@@ -138,15 +139,14 @@ def update_database(articulos):
             imagen TEXT,
             enlace TEXT UNIQUE,
             subasta_id TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # Crear la tabla historial (historial_subastas) si no existe
-    # También se agrega 'subasta_id'
+    # Crear la tabla historial si no existe
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS historial_subastas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             lote TEXT,
             descripcion TEXT,
             precio TEXT,
@@ -154,48 +154,35 @@ def update_database(articulos):
             imagen TEXT,
             enlace TEXT,
             subasta_id TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    # Cargar los registros existentes (para detección de cambios)
+
     cursor.execute("SELECT precio, ofertas, enlace FROM subastas")
     existing = {row[2]: {'precio': row[0], 'ofertas': row[1]} for row in cursor.fetchall()}
     
-    for art in articulos:
-        # art es: (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-        lote, descripcion, precio, ofertas, imagen, enlace, subasta_id = art
-        
+    for lote, descripcion, precio, ofertas, imagen, enlace, subasta_id in articulos:
         if enlace in existing:
-            # Si ya existe: actualizar solo si cambió precio u ofertas
             if precio != existing[enlace]['precio'] or ofertas != existing[enlace]['ofertas']:
                 cursor.execute('''
                     UPDATE subastas
-                    SET precio = ?, ofertas = ?, subasta_id = ?, timestamp = CURRENT_TIMESTAMP
-                    WHERE enlace = ?
+                    SET precio = %s, ofertas = %s, subasta_id = %s, timestamp = CURRENT_TIMESTAMP
+                    WHERE enlace = %s
                 ''', (precio, ofertas, subasta_id, enlace))
                 
-                print(f"🔄 Actualizado: {enlace} (subasta {subasta_id}), nuevo precio={precio}, ofertas={ofertas}.")
-                
-                # Registrar también en historial
                 cursor.execute('''
                     INSERT INTO historial_subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
-                
         else:
-            # Insertar nuevo registro en la tabla principal
             cursor.execute('''
                 INSERT INTO subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
             
-            print(f"➕ Insertado: {enlace} (subasta {subasta_id}), precio={precio}, ofertas={ofertas}.")
-            
-            # Registrar la inserción en el historial
             cursor.execute('''
                 INSERT INTO historial_subastas (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (lote, descripcion, precio, ofertas, imagen, enlace, subasta_id))
     
     conn.commit()
@@ -204,37 +191,18 @@ def update_database(articulos):
 # =========================================
 # FLUJO PRINCIPAL
 # =========================================
-def detect_initial_articles():
-    """Realiza la detección inicial de todos los artículos y los carga en la base de datos."""
-    print(f"🔎 Detectando todos los artículos por primera vez en {SCRAPE_URL} ...")
+def run_scraper():
+    print(f"🔎 Scrapeando subasta en {SCRAPE_URL} ...")
     articulos = scrape_subastas(SCRAPE_URL)
     if articulos:
         update_database(articulos)
-        print("✅ Detección inicial completada y artículos guardados.")
+        print("✅ Datos guardados.")
     else:
-        print("❌ No se encontraron artículos en la detección inicial.")
-
-def observer_updates(interval=300):
-    """Ejecuta el observador de actualizaciones, refrescando la información cada 'interval' segundos."""
-    print("🔄 Iniciando observador de actualizaciones...")
-    try:
-        while True:
-            articulos = scrape_subastas(SCRAPE_URL)
-            if articulos:
-                update_database(articulos)
-                print("✅ Base de datos actualizada.")
-            else:
-                print("❌ No se encontraron artículos en esta actualización.")
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        print("⏹️ Observador detenido por el usuario.")
+        print("❌ No se encontraron artículos.")
 
 if __name__ == "__main__":
     try:
-        # 1. Detección inicial: se cargan todos los artículos en la base de datos
-        detect_initial_articles()
-        # 2. Ejecución del observador: actualiza registros solo cuando hay cambios
-        observer_updates(interval=300)  # Intervalo de 5 minutos (300 segundos)
+        run_scraper()
     finally:
         driver.quit()
         print("✅ Script finalizado.")
