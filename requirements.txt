@@ -1,7 +1,7 @@
 streamlit
-nltk
-scikit-learn
 pandas
 numpy
 plotly
 psycopg2-binary
+scikit-learn
+nltk
